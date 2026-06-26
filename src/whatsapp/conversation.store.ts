@@ -1,47 +1,63 @@
+import { Injectable, OnModuleInit, Inject, Logger } from '@nestjs/common'
+import { Pool } from 'pg'
+import { PG_POOL } from '../database/database.module'
+
 export interface ConversationMessage {
   role: 'user' | 'assistant'
   content: string
 }
 
-interface Session {
-  messages: ConversationMessage[]
-  updatedAt: number
-}
+// How many messages (not pairs) to feed into LLM context per request
+const MAX_HISTORY = 20
 
-const SESSION_TTL_MS = 30 * 60 * 1000  // 30 minutes of inactivity clears context
-const MAX_HISTORY_PAIRS = 6            // keep last 6 exchanges (12 messages) to cap tokens
+@Injectable()
+export class ConversationStore implements OnModuleInit {
+  private readonly logger = new Logger(ConversationStore.name)
 
-export class ConversationStore {
-  private readonly sessions = new Map<string, Session>()
+  constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
 
-  getHistory(phoneNumber: string): ConversationMessage[] {
-    const session = this.sessions.get(phoneNumber)
-    if (!session) return []
-
-    if (Date.now() - session.updatedAt > SESSION_TTL_MS) {
-      this.sessions.delete(phoneNumber)
-      return []
-    }
-
-    return session.messages
+  async onModuleInit(): Promise<void> {
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS messages (
+        id        SERIAL PRIMARY KEY,
+        phone     VARCHAR(30)  NOT NULL,
+        role      VARCHAR(10)  NOT NULL,
+        content   TEXT         NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `)
+    await this.pool.query(`
+      CREATE INDEX IF NOT EXISTS messages_phone_created_idx
+        ON messages (phone, created_at DESC)
+    `)
+    this.logger.log('Messages table ready')
   }
 
-  append(phoneNumber: string, userMessage: string, assistantReply: string): void {
-    const existing = this.getHistory(phoneNumber)
-
-    const updated: ConversationMessage[] = [
-      ...existing,
-      { role: 'user', content: userMessage },
-      { role: 'assistant', content: assistantReply },
-    ]
-
-    // Keep only the most recent N pairs
-    const trimmed = updated.slice(-MAX_HISTORY_PAIRS * 2)
-
-    this.sessions.set(phoneNumber, { messages: trimmed, updatedAt: Date.now() })
+  async getHistory(phone: string): Promise<ConversationMessage[]> {
+    const { rows } = await this.pool.query<{ role: string; content: string }>(
+      `SELECT role, content
+         FROM (
+           SELECT role, content, created_at
+             FROM messages
+            WHERE phone = $1
+            ORDER BY created_at DESC
+            LIMIT $2
+         ) sub
+        ORDER BY created_at ASC`,
+      [phone, MAX_HISTORY],
+    )
+    return rows as ConversationMessage[]
   }
 
-  clear(phoneNumber: string): void {
-    this.sessions.delete(phoneNumber)
+  async append(phone: string, userMessage: string, assistantReply: string): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO messages (phone, role, content)
+       VALUES ($1, 'user', $2), ($1, 'assistant', $3)`,
+      [phone, userMessage, assistantReply],
+    )
+  }
+
+  async clear(phone: string): Promise<void> {
+    await this.pool.query('DELETE FROM messages WHERE phone = $1', [phone])
   }
 }

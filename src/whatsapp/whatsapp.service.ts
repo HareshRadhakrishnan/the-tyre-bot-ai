@@ -18,19 +18,19 @@ const GRAPH_API_VERSION = 'v20.0'
 @Injectable()
 export class WhatsappService {
   private readonly logger = new Logger(WhatsappService.name)
-  private readonly conversations = new ConversationStore()
 
   constructor(
     private readonly config: ConfigService,
     private readonly sheetsService: SheetsService,
     private readonly llmService: LlmService,
+    private readonly conversations: ConversationStore,
   ) {}
 
   async handleIncomingMessage(from: string, text: string): Promise<void> {
     this.logger.log(`Incoming message from ${from}: "${text}"`)
 
     // ── 1. Load session + session-aware input guardrail ─────────────────────
-    const history = this.conversations.getHistory(from)
+    const history = await this.conversations.getHistory(from)
     const inSession = history.length > 0
 
     // Refuse only off-topic FIRST-CONTACT messages (no session, no tyre signal, no greeting)
@@ -80,7 +80,7 @@ export class WhatsappService {
     }
 
     // ── 5. Persist exchange THEN send (so history survives even if send fails) ─
-    this.conversations.append(from, text, reply)
+    await this.conversations.append(from, text, reply)
     await this.sendTextMessage(from, reply)
   }
 
