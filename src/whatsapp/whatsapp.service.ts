@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { SheetsService } from '../sheets/sheets.service'
 import { LlmService } from '../llm/llm.service'
+import { LexiconStore } from '../llm/lexicon.store'
 import {
   isInDomain,
   isConversational,
@@ -9,6 +10,11 @@ import {
   INPUT_REFUSAL_MESSAGE,
   REFUSAL_MESSAGE,
 } from '../llm/guardrails'
+import {
+  combineUserContext,
+  extractProductQuery,
+  needsSizeOrBrandPrompt,
+} from '../llm/query.util'
 import { ProductRow } from '../sheets/sheets.types'
 import { getAvailabilityLabel } from '../common/stock.util'
 import { ConversationStore } from './conversation.store'
@@ -24,6 +30,7 @@ export class WhatsappService {
     private readonly sheetsService: SheetsService,
     private readonly llmService: LlmService,
     private readonly conversations: ConversationStore,
+    private readonly lexiconStore: LexiconStore,
   ) {}
 
   async handleIncomingMessage(from: string, text: string): Promise<void> {
@@ -40,18 +47,24 @@ export class WhatsappService {
       return
     }
 
-    // ── 2. Look up product in Google Sheets ─────────────────────────────────
-    const query = this.extractProductQuery(text)
+    // ── 2. Look up product in Google Sheets (multi-turn context) ────────────
+    const contextText = combineUserContext(history, text)
+    const learnedFillers = this.lexiconStore.getLearnedFillers()
+    const query = extractProductQuery(contextText, { learnedFillers })
     let productInfo = null
 
     try {
       productInfo = await this.sheetsService.findProductByCodeOrName(query)
       this.logger.debug(
-        productInfo ? `Product found: ${productInfo.sku}` : 'No product match in Sheets',
+        productInfo ? `Product found: ${productInfo.sku}` : `No product match for query: "${query}"`,
       )
     } catch (err) {
       this.logger.error('Sheets lookup failed', err)
     }
+
+    void this.lexiconStore.recordQuery(from, text, query, productInfo !== null)
+
+    const askForSize = !productInfo && needsSizeOrBrandPrompt(contextText, query)
 
     // ── 3. Generate LLM reply (with conversation history) ───────────────────
     const businessName = this.config.get<string>('BOT_BUSINESS_NAME', 'Our Tyre Shop')
@@ -65,6 +78,7 @@ export class WhatsappService {
         productInfo,
         businessName,
         history,
+        needsSizeOrBrandPrompt: askForSize,
       })
     } catch (err) {
       this.logger.error('LLM call failed', err)
@@ -122,51 +136,5 @@ export class WhatsappService {
    */
   private buildDirectProductReply(p: ProductRow): string {
     return `*${p.name}*\nAvailability: ${getAvailabilityLabel(p.stock)}\nPrice: Rs ${p.price}`
-  }
-
-  /**
-   * Extracts and normalises the most likely product identifier from a
-   * free-text message, then returns a string suitable for a Sheets lookup.
-   *
-   * Tyre size notation customers use (all normalised to "WWW/HH RDD"):
-   *   205/55 R16   — standard with R
-   *   205/55R16    — standard no space
-   *   205/55 16    — no R prefix
-   *   205-55-16    — dash-separated
-   *   20555r16     — no separators
-   */
-  private extractProductQuery(text: string): string {
-    const normalized = this.normalizeTyreSize(text)
-    if (normalized) return normalized
-
-    // Match SKU-like tokens (e.g. TYR-MRF-1556514)
-    const skuMatch = text.match(/\bTYR-[A-Z]+-\d+\b/i)
-    if (skuMatch) return skuMatch[0]
-
-    // Fallback: strip common filler words and return the cleaned text
-    return text
-      .replace(/\b(do you have|is|are|any|please|hi|hello|the|a|an|for|of|in|stock|available|check|want|need|looking|get|give|me|i)\b/gi, '')
-      .replace(/\s{2,}/g, ' ')
-      .trim()
-  }
-
-  /**
-   * Tries to detect a tyre size in the message (with or without "R")
-   * and returns the canonical "WWW/HH RDD" form, or null if not found.
-   */
-  private normalizeTyreSize(text: string): string | null {
-    // Already canonical: 205/55 R16 or 205/55R16
-    const canonical = text.match(/\b(\d{3})\/(\d{2})\s*[Rr](\d{2})\b/)
-    if (canonical) return `${canonical[1]}/${canonical[2]} R${canonical[3]}`
-
-    // Missing R: "205/55 16" or "205-55-16" or "205/55-16"
-    const noR = text.match(/\b(\d{3})[\/\-](\d{2})\s*[\/\-\s](\d{2})\b/)
-    if (noR) return `${noR[1]}/${noR[2]} R${noR[3]}`
-
-    // Space-separated digits only: "205 55 16"
-    const spaceSep = text.match(/\b(1[4-9]\d|2\d{2})\s+(3[0-9]|4[0-9]|5[0-9]|6[0-9]|7[0-9]|8[0-9])\s+(1[3-9]|2[0-2])\b/)
-    if (spaceSep) return `${spaceSep[1]}/${spaceSep[2]} R${spaceSep[3]}`
-
-    return null
   }
 }

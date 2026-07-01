@@ -15,4 +15,5 @@ export interface GenerateReplyParams {
   productInfo: ProductInfo | null
   businessName: string
   history?: ConversationTurn[]
+  needsSizeOrBrandPrompt?: boolean
 }

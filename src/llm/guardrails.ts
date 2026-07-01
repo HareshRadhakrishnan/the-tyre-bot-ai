@@ -1,40 +1,36 @@
+import {
+  BRANDS,
+  DOMAIN_KEYWORDS_EN,
+  DOMAIN_KEYWORDS_SINGLISH,
+  DOMAIN_KEYWORDS_TANGLISH,
+  CONVERSATIONAL_KEYWORDS,
+  buildWordRegex,
+  normalizeQueryText,
+} from './lexicon'
+
+const SINHALA_SCRIPT = /[\u0D80-\u0DFF]/
+const TAMIL_SCRIPT = /[\u0B80-\u0BFF]/
+
 /**
  * Input guardrail — returns true when the message is likely about
  * tyres, products, stock, or prices. If false, skip Sheets + LLM entirely.
  */
 const IN_DOMAIN_PATTERNS = [
-  /\btyre[s]?\b/i,
-  /\btire[s]?\b/i,
-  /\bwheel[s]?\b/i,
-  /\brim[s]?\b/i,
-  /\bstock\b/i,
-  /\bavailab/i,
-  /\bprice\b/i,
-  /\bcost\b/i,
-  /\bhow much\b/i,
-  /\brate\b/i,
-  /\bproduct\b/i,
-  /\bitem\b/i,
-  /\bsku\b/i,
-  /\bquantity\b/i,
-  /\bqty\b/i,
-  /\bin.?stock\b/i,
-  /\bout.?of.?stock\b/i,
-  /\bsize\b/i,
-  /\bR\d{2}\b/,                    // R14, R15, R16, R17 tyre size notation
-  /\b\d{3}\/\d{2}\b/,              // 205/55 tyre size notation (with slash)
-  /\b\d{3}[\/\-]\d{2}[\/\-\s]\d{2}\b/, // 205/55 16 or 205-55-16 (no R prefix)
-  /\b(1[4-9]\d|2\d{2})\s+\d{2}\s+(1[3-9]|2[0-2])\b/, // spaced: 205 55 16
-  /\bmrf\b/i,
-  /\bapollo\b/i,
-  /\bbridgestone\b/i,
-  /\bceat\b/i,
-  /\bgoodyear\b/i,
-  /\bfalken\b/i,
-  /\byokohama\b/i,
-  /\bmichelin\b/i,
+  // Tyre size notation
+  /\bR\d{2}\b/,
+  /\b\d{3}\/\d{2}\b/,
+  /\b\d{3}[\/\-]\d{2}[\/\-\s]\d{2}\b/,
+  /\b(1[4-9]\d|2\d{2})\s+\d{2}\s+(1[3-9]|2[0-2])\b/,
+  // English domain keywords
+  buildWordRegex(DOMAIN_KEYWORDS_EN),
+  // Singlish / Tanglish domain keywords
+  buildWordRegex(DOMAIN_KEYWORDS_SINGLISH),
+  buildWordRegex(DOMAIN_KEYWORDS_TANGLISH),
+  // Brands
+  buildWordRegex(BRANDS),
   /\bjk\s?tyre\b/i,
-  /\btvs\b/i,
+  // English phrase patterns
+  /\bhow much\b/i,
   /\bdo you (have|sell|stock)\b/i,
   /\bis .+ available\b/i,
   /\bcheck stock\b/i,
@@ -42,13 +38,16 @@ const IN_DOMAIN_PATTERNS = [
   /\bwhat.?s the price\b/i,
   /\bwhat is the price\b/i,
   /\bhow many\b/i,
-  /\bkitna\b/i,        // Urdu/Hindi: "how much"
-  /\bdam\b/i,          // Urdu: "price"
-  /\bqeemat\b/i,       // Urdu: "price"
+  /\bin.?stock\b/i,
+  /\bout.?of.?stock\b/i,
+  /\bavailab/i,
 ]
 
-export const isInDomain = (text: string): boolean =>
-  IN_DOMAIN_PATTERNS.some((pattern) => pattern.test(text))
+export const isInDomain = (text: string): boolean => {
+  if (SINHALA_SCRIPT.test(text) || TAMIL_SCRIPT.test(text)) return true
+  const normalized = normalizeQueryText(text)
+  return IN_DOMAIN_PATTERNS.some((pattern) => pattern.test(normalized))
+}
 
 /**
  * Conversational allow-list — greetings, pleasantries, and short
@@ -64,10 +63,7 @@ const CONVERSATIONAL_PATTERNS = [
   /\b(bye|goodbye|see\s*you|later|tc|take\s*care)\b/i,
   /\bhow\s+are\s+you\b/i,
   /\bwhat.?s\s+up\b/i,
-  // Romanized Sinhala
-  /\b(ayubowan|kohomada|hari|hondai|stuti|istuti|bohoma|aney|machan)\b/i,
-  // Romanized Tamil
-  /\b(vanakkam|nandri|nandrig|seri|epdi|enna|machaan|da\b|bro)\b/i,
+  buildWordRegex(CONVERSATIONAL_KEYWORDS),
 ]
 
 export const isConversational = (text: string): boolean =>
@@ -81,7 +77,7 @@ const OFF_TOPIC_OUTPUT_PATTERNS = [
   /\bpython\b/i,
   /\bjavascript\b/i,
   /\btypescript\b/i,
-  /\bsource code\b/i,       // "source code" not bare "code" (product code is valid)
+  /\bsource code\b/i,
   /\bwrite (a |the )?code\b/i,
   /\bprogramm/i,
   /\balgorithm\b/i,
